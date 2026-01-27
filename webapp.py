@@ -3,6 +3,15 @@ from collections import defaultdict
 import pandas as pd
 import altair as alt
 
+# --- Master List of Workcenters ---
+MASTER_WORKCENTERS = [
+    "ATL:COM:Wingbox Sub", "ATL:TECH:Tactical Prod", "ATL:TECH:Tactical AUR",
+    "ATL:TECH:Battery Prod", "ATL:TECH:C2GSE", "ATL:TECH:3D Print Lab",
+    "ATL:TECH:Prop Bal Lab", "ATL:TECH:Avi Sub Assy", "ATL:COM:Gearbox Sub",
+    "ATL:COM:Fuse Assy", "ATL:DEV:C2GSE", "ATL:GPC:Flight Accpt",
+    "ATL:COM:Payload", "ATL:COM:Final Assy", "ATL:TECH:NPI", "ATL:DEV:Battery Prod"
+]
+
 # --- Helper Functions ---
 def time_to_minutes(time_str):
     try:
@@ -76,15 +85,24 @@ def assign_and_balance_workload(associates, work_volumes, task_times, shift_minu
         
     return associates, unassigned_work
 
+# --- Master List of Workcenters ---
+MASTER_WORKCENTERS = [
+    "ATL:COM:Wingbox Sub", "ATL:TECH:Tactical Prod", "ATL:TECH:Tactical AUR",
+    "ATL:TECH:Battery Prod", "ATL:TECH:C2GSE", "ATL:TECH:3D Print Lab",
+    "ATL:TECH:Prop Bal Lab", "ATL:TECH:Avi Sub Assy", "ATL:COM:Gearbox Sub",
+    "ATL:COM:Fuse Assy", "ATL:DEV:C2GSE", "ATL:GPC:Flight Accpt",
+    "ATL:COM:Payload", "ATL:COM:Final Assy", "ATL:TECH:NPI", "ATL:DEV:Battery Prod"
+]
+
 # --- Main App ---
 st.set_page_config(layout="wide", page_title="Warehouse Staffing Planner")
 st.title("Warehouse Staffing & Planning Tool")
 with st.expander("📖 How to Use This Tool"):
     st.markdown("""
     1.  **Step 1: Configure Your Shift:** Enter standard times, a standard shift length, and target efficiency.
-    2.  **Step 2: Enter Workload:** Define all work volumes.
+    2.  **Step 2: Enter Workload:** Define work volumes for putaway, stock requests, and **item counts for each specific Workcenter**.
     3.  **Headcount Analysis:** The tool recommends a headcount based on a *standard* workday.
-    4.  **Step 3: Define Your Team:** Enable a slot for each associate. A green circle (🟢) will appear next to enabled slots. You can grant individual **Overtime %** to increase an associate's available work time.
+    4.  **Step 3: Define Your Team:** First, specify how many associate slots you want to display. Then, enable each associate you want to include. A green circle (🟢) will appear next to enabled slots. You can grant individual **Overtime %** to increase an associate's available work time. Assign Workcenters using the multi-select dropdown. Only Workcenters with items to fulfill will appear as options, and their current item count will be displayed next to their name.
     5.  **Generate Plan & Review:** The plan will distribute work based on each person's unique capacity. Efficiency is calculated against their personal scheduled hours (standard + OT).
     """)
 
@@ -116,29 +134,52 @@ if shift_minutes == 0 and shift_hours_str not in ["0:0:0", "00:00:00"]:
     st.warning("Invalid 'Shift Working Hours' format. Please use H:M:S.", icon="⚠️")
     time_warning = True
 
-st.header("Step 2: Enter Fulfillment Details")
-num_wcs = st.number_input("Number of Workcenters for Fulfillment", min_value=0, value=3)
-replenishment_items = {i+1: st.number_input(f"Items for WC {i+1}", min_value=0, value=50, key=f"wc_{i+1}") for i in range(num_wcs)}
-total_work_minutes = sum(v * task_times["picking_time"] for v in replenishment_items.values()) + (num_putaway * task_times["putaway_time"]) + (num_stock_requests * task_times["stock_request_time"])
+st.header("Step 2: Enter Fulfillment Details (Workcenters)")
+
+replenishment_items = {}
+st.markdown("Enter item counts for each workcenter below. Only workcenters with items > 0 will be included in the plan.")
+for wc_name in MASTER_WORKCENTERS:
+    item_count = st.number_input(f"Items for **{wc_name}**", min_value=0, value=0, key=f"item_wc_{wc_name}")
+    if item_count > 0:
+        replenishment_items[wc_name] = item_count
+
+num_wcs = len(replenishment_items)
+
+
+total_work_minutes = sum(v * task_times["picking_time"] for v in replenishment_items.values()) + \
+                     (num_putaway * task_times["putaway_time"]) + \
+                     (num_stock_requests * task_times["stock_request_time"])
 recommended_headcount = calculate_headcount_recommendation(total_work_minutes, shift_minutes, target_efficiency) if shift_minutes > 0 and not time_warning else 0
 st.subheader("Headcount Analysis")
 st.info(f"Total workload is **{total_work_minutes:.2f} minutes**. Based on a standard workday, the recommended headcount is **{recommended_headcount}**.")
 
 st.header("Step 3: Define Your Team & Generate Plan")
 
-MAX_ASSOCIATES = 15
+# --- NEW: Number of slots input ---
+ABSOLUTE_MAX_ASSOCIATES = 30 # A hard limit to prevent UI overload
+if 'num_associate_slots' not in st.session_state:
+    st.session_state.num_associate_slots = max(1, recommended_headcount) # sensible default
+
+number_of_slots_to_display = st.number_input(
+    "Number of Associate Slots to Display",
+    min_value=1,
+    max_value=ABSOLUTE_MAX_ASSOCIATES,
+    value=st.session_state.num_associate_slots,
+    key='num_associate_slots',
+    help=f"Adjust this to show more or fewer associate configuration slots. Data for hidden slots is preserved."
+)
+
 associates_input = []
 st.write("**Enable and define each associate for the plan.**")
-num_cols = 5
-for i in range(0, MAX_ASSOCIATES, num_cols):
+num_cols = 5 # Display 5 columns of associate expanders
+for i in range(0, number_of_slots_to_display, num_cols): # Loop up to the user-defined number of slots
     cols = st.columns(num_cols)
     for j in range(num_cols):
         assoc_index = i + j
-        if assoc_index < MAX_ASSOCIATES:
+        if assoc_index < number_of_slots_to_display: # Ensure we don't go beyond the user-defined limit
             with cols[j]:
                 is_currently_enabled = st.session_state.get(f'enabled_{assoc_index}', False)
                 
-                # --- NEW: Create dynamic label with status emoji ---
                 status_icon = "🟢" if is_currently_enabled else "⚪"
                 expander_label = f"{status_icon} Associate Slot {assoc_index + 1}"
                 
@@ -148,8 +189,33 @@ for i in range(0, MAX_ASSOCIATES, num_cols):
                     if is_enabled:
                         name = st.text_input(f"Name", f"Associate {assoc_index + 1}", key=f"name_{assoc_index}")
                         overtime_pct = st.number_input("Overtime %", min_value=0, max_value=200, value=0, step=5, key=f"ot_{assoc_index}")
-                        wcs_str = st.text_input(f"Workcenters", "none", key=f"wcs_{assoc_index}")
-                        wcs = [int(x.strip()) for x in wcs_str.split(',') if x.strip().isdigit() and int(x.strip()) != 0]
+                        
+                        available_wc_names_with_items = replenishment_items.keys()
+                        multiselect_options_formatted = []
+                        wc_name_to_formatted_name_map = {} 
+                        for wc_name in available_wc_names_with_items:
+                            item_count = replenishment_items[wc_name]
+                            formatted_name = f"{wc_name} ({item_count} items)"
+                            multiselect_options_formatted.append(formatted_name)
+                            wc_name_to_formatted_name_map[wc_name] = formatted_name
+                        
+                        default_selected_raw_wcs = st.session_state.get(f"wcs_{assoc_index}", [])
+                        multiselect_default_formatted = [
+                            wc_name_to_formatted_name_map[wc] 
+                            for wc in default_selected_raw_wcs 
+                            if wc in wc_name_to_formatted_name_map 
+                        ]
+                        
+                        selected_formatted_wcs = st.multiselect(
+                            f"Assigned Workcenters", 
+                            options=multiselect_options_formatted, 
+                            default=multiselect_default_formatted, 
+                            key=f"wcs_{assoc_index}_formatted" 
+                        )
+                        
+                        wcs = [s.split(' (')[0] for s in selected_formatted_wcs]
+                        st.session_state[f"wcs_{assoc_index}"] = wcs 
+                        
                         st.write("_Priority_")
                         tasks = ["putaway", "stock_request", "none"]
                         p1 = st.selectbox(f"P1", options=tasks, index=0, key=f"p1_{assoc_index}")
@@ -169,16 +235,18 @@ st.info(f"**{actual_headcount}** associate(s) are enabled for this plan.")
 can_generate = True
 if time_warning: can_generate = False
 if actual_headcount > 0 and num_wcs > 0:
-    expected_wcs = set(replenishment_items.keys())
-    assigned_wcs = {wc for assoc in associates_input for wc in assoc['workcenters']}
+    expected_wcs = set(replenishment_items.keys()) 
+    assigned_wcs = {wc for assoc in associates_input for wc in assoc['workcenters']} 
+
     missing_wcs = expected_wcs - assigned_wcs
     if missing_wcs:
-        st.error(f"**PLANNING HALTED:** Workcenter(s) **{sorted(list(missing_wcs))}** have work but are not assigned to any associate.")
+        st.error(f"**PLANNING HALTED:** Workcenter(s) **{sorted(list(missing_wcs))}** have work (items > 0) but are not assigned to any associate.")
         can_generate = False
-    invalid_wcs = assigned_wcs - expected_wcs
-    if invalid_wcs:
-        st.error(f"**PLANNING HALTED:** Invalid Workcenter(s) **{sorted(list(invalid_wcs))}** assigned. Please use only WCs defined in Step 2.")
-        can_generate = False
+    
+    assigned_to_no_work = assigned_wcs - expected_wcs
+    if assigned_to_no_work:
+        st.warning(f"**WARNING:** Associate(s) are assigned to Workcenter(s) **{sorted(list(assigned_to_no_work))}** which currently have 0 items. These WCs will contribute no work to the plan.")
+
 elif actual_headcount == 0 and total_work_minutes > 0:
     st.warning("There is work to be done but no associates are enabled. Please enable associates in Step 3.")
     can_generate = False
@@ -250,7 +318,6 @@ if st.session_state.plan_generated:
         st.subheader("Action Plan: Unassigned Work & Recommendations")
         if unassigned["fulfillment_minutes"] > 0:
             st.error("CRITICAL: Fulfillment work will be dropped due to over-assignment.")
-            # ... detailed error reporting ...
         if unassigned["putaway"] > 0 or unassigned["stock_request"] > 0:
             st.warning("The following secondary tasks will be carried over because no available associate had capacity or the correct priority:")
             if unassigned["putaway"] > 0: st.write(f"- Unassigned Putaway Transactions: **{unassigned['putaway']}**")
